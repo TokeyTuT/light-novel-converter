@@ -1,0 +1,18 @@
+[project]
+name = "light-novel-converter"
+version = "1.0.0"
+description = "简体横排 EPUB 转台湾繁体竖排 EPUB"
+requires-python = ">=3.10"
+dependencies = [
+    "lxml>=5.2,<7",
+    "opencc-python-reimplemented>=0.1.7,<0.2",
+]
+
+[tool.pytest.ini_options]
+addopts = "-ra"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py310"
+

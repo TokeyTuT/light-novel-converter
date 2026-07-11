@@ -1,0 +1,6 @@
+# OpenCC 的纯 Python 实现，Apple Silicon 无需额外安装系统级 C++ 库。
+opencc-python-reimplemented>=0.1.7,<0.2
+
+# 安全、保留命名空间地解析 EPUB 内的 XML/XHTML/HTML。
+lxml>=5.2,<7
+
