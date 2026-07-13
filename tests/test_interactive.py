@@ -10,6 +10,7 @@ import pytest
 from lxml import etree
 
 from epub_tw_converter import cli
+from epub_tw_converter import interactive
 from epub_tw_converter.interactive import (
     OUTPUT_SUFFIX,
     convert_batch,
@@ -28,6 +29,40 @@ def test_cli_without_paths_starts_interactive_menu(
     monkeypatch.setattr(cli, "run_interactive", lambda: 23)
 
     assert cli.main([]) == 23
+
+
+def test_file_dialog_uses_native_picker_on_macos(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """macOS 应继续使用 Finder，避免依赖 tkinter。"""
+
+    expected = [tmp_path / "mac.epub"]
+    monkeypatch.setattr(interactive.sys, "platform", "darwin")
+    monkeypatch.setattr(
+        interactive,
+        "_select_epub_files_macos",
+        lambda: expected,
+    )
+
+    assert interactive.select_epub_files_with_dialog() == expected
+
+
+def test_file_dialog_uses_tk_picker_on_windows(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Windows 不应尝试调用 macOS 的 osascript。"""
+
+    expected = [tmp_path / "windows.epub"]
+    monkeypatch.setattr(interactive.sys, "platform", "win32")
+    monkeypatch.setattr(
+        interactive,
+        "_select_epub_files_tk",
+        lambda: expected,
+    )
+
+    assert interactive.select_epub_files_with_dialog() == expected
 
 
 def test_default_output_path_uses_requested_suffix(tmp_path: Path) -> None:

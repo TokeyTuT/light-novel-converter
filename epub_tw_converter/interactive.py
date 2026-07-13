@@ -1,8 +1,9 @@
-"""macOS 交互式批量转换入口。"""
+"""macOS 与 Windows 交互式批量转换入口。"""
 
 from __future__ import annotations
 
 import subprocess
+import sys
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -55,8 +56,8 @@ def validate_epub_file(path: Path) -> str | None:
     return None
 
 
-def select_epub_files_with_dialog() -> list[Path]:
-    """在 macOS 上通过系统文件选择框选择一个或多个文件。"""
+def _select_epub_files_macos() -> list[Path]:
+    """通过 macOS Finder 的原生对话框选择一个或多个 EPUB。"""
 
     script = """
 tell application "Finder" to activate
@@ -87,6 +88,46 @@ return outputPaths
         raise EpubConversionError(f"无法打开文件选择框：{detail}")
 
     return [Path(item) for item in completed.stdout.splitlines() if item]
+
+
+def _select_epub_files_tk() -> list[Path]:
+    """通过 Windows 等平台的 Tk 系统对话框选择一个或多个 EPUB。"""
+
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+    except ImportError as exc:
+        raise EpubConversionError(
+            "当前 Python 未安装 tkinter，无法打开系统文件选择框；"
+            "请安装包含 Tcl/Tk 的 Python 发行版。"
+        ) from exc
+
+    try:
+        root = tk.Tk()
+    except tk.TclError as exc:
+        raise EpubConversionError(f"无法打开系统文件选择框：{exc}") from exc
+
+    root.withdraw()
+    try:
+        # 将对话框带到前台，避免在 Windows 中被终端窗口遮挡。
+        root.attributes("-topmost", True)
+        selected_paths = filedialog.askopenfilenames(
+            parent=root,
+            title="选择一个或多个 EPUB 文件",
+            filetypes=[("EPUB 文件", "*.epub"), ("所有文件", "*.*")],
+        )
+    finally:
+        root.destroy()
+
+    return [Path(item) for item in selected_paths]
+
+
+def select_epub_files_with_dialog() -> list[Path]:
+    """按当前系统打开支持多选的原生文件选择框。"""
+
+    if sys.platform == "darwin":
+        return _select_epub_files_macos()
+    return _select_epub_files_tk()
 
 
 def convert_batch(
@@ -197,7 +238,11 @@ def run_interactive(
     """运行菜单、拉起文件选择框并执行批量转换。"""
 
     output_func("\n简体横排 EPUB -> 台湾繁体竖排 EPUB")
-    output_func("即将打开 Finder，请在对话框中按 Command 键多选 EPUB 文件。")
+    if sys.platform == "darwin":
+        selection_hint = "即将打开 Finder，请在对话框中按 Command 键多选 EPUB 文件。"
+    else:
+        selection_hint = "即将打开系统文件选择框，请按 Ctrl 键多选 EPUB 文件。"
+    output_func(selection_hint)
     try:
         input_paths = file_selector()
     except EpubConversionError as exc:
