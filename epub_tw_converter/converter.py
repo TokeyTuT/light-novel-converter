@@ -29,6 +29,15 @@ from .text import TaiwanTextConverter
 
 LOGGER = logging.getLogger(__name__)
 EPUB_MIMETYPE = b"application/epub+zip"
+# 一些旧制书工具会在 mimetype 末尾写入换行。该输入不完全符合
+# EPUB OCF，但内容仍可被可靠识别；重打包时会写回严格规范的值。
+COMPATIBLE_EPUB_MIMETYPES = frozenset(
+    {
+        EPUB_MIMETYPE,
+        EPUB_MIMETYPE + b"\n",
+        EPUB_MIMETYPE + b"\r\n",
+    }
+)
 MAX_TOTAL_UNCOMPRESSED_SIZE = 4 * 1024 * 1024 * 1024
 MAX_ENTRY_UNCOMPRESSED_SIZE = 1024 * 1024 * 1024
 MAX_TEXT_DOCUMENT_SIZE = 64 * 1024 * 1024
@@ -192,9 +201,14 @@ class EpubConverter:
         if "mimetype" not in seen:
             raise EpubConversionError("输入 EPUB 缺少根目录 mimetype 文件。")
         mimetype_info = archive.getinfo("mimetype")
-        if archive.read(mimetype_info) != EPUB_MIMETYPE:
+        input_mimetype = archive.read(mimetype_info)
+        if input_mimetype not in COMPATIBLE_EPUB_MIMETYPES:
             raise EpubConversionError(
-                "mimetype 内容必须精确为 application/epub+zip。"
+                "mimetype 内容不是 application/epub+zip，无法识别为 EPUB。"
+            )
+        if input_mimetype != EPUB_MIMETYPE:
+            LOGGER.warning(
+                "输入 EPUB 的 mimetype 含末尾换行；输出时将自动规范化。"
             )
         if (
             infos[0].filename != "mimetype"

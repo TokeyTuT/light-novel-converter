@@ -9,6 +9,7 @@ from pathlib import Path
 
 from .converter import EpubConverter
 from .errors import EpubConversionError
+from .interactive import run_interactive
 from .models import PageDirection
 
 
@@ -16,11 +17,25 @@ def build_parser() -> argparse.ArgumentParser:
     """构造命令行解析器。"""
 
     parser = argparse.ArgumentParser(
-        prog="convert.py",
         description="将简体中文横排 EPUB 转为台湾繁体中文竖排 EPUB。",
     )
-    parser.add_argument("input", type=Path, help="输入 EPUB 文件")
-    parser.add_argument("output", type=Path, help="输出 EPUB 文件")
+    parser.add_argument(
+        "input",
+        type=Path,
+        nargs="?",
+        help="输入 EPUB 文件；省略时启动交互式文件选择",
+    )
+    parser.add_argument(
+        "output",
+        type=Path,
+        nargs="?",
+        help="输出 EPUB 文件；省略时启动交互式文件选择",
+    )
+    parser.add_argument(
+        "--interactive",
+        action="store_true",
+        help="无论是否传入路径，均启动交互式批量转换菜单",
+    )
     parser.add_argument(
         "--page-direction",
         choices=[direction.value for direction in PageDirection],
@@ -62,8 +77,14 @@ def configure_logging(verbose: bool) -> None:
 def main(argv: Sequence[str] | None = None) -> int:
     """执行命令行转换并返回进程退出码。"""
 
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
     configure_logging(args.verbose)
+
+    if args.interactive or (args.input is None and args.output is None):
+        return run_interactive()
+    if args.input is None or args.output is None:
+        parser.error("直接转换模式必须同时提供 input 和 output；或省略两者进入菜单。")
 
     try:
         summary = EpubConverter(

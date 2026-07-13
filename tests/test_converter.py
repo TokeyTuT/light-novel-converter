@@ -196,6 +196,28 @@ def test_mimetype_is_repaired_when_input_order_is_wrong(
         assert first.compress_type == ZIP_STORED
 
 
+@pytest.mark.parametrize("line_ending", [b"\n", b"\r\n"])
+def test_mimetype_with_terminal_newline_is_normalized(
+    tmp_path: Path,
+    epub_factory: Callable[..., tuple[Path, dict[str, bytes]]],
+    caplog: pytest.LogCaptureFixture,
+    line_ending: bytes,
+) -> None:
+    """兼容旧制书工具写入的换行，并在输出中恢复严格 OCF 值。"""
+
+    input_path, _ = epub_factory(
+        include_broken=False,
+        mimetype_data=EPUB_MIMETYPE + line_ending,
+    )
+    output_path = tmp_path / "normalized.epub"
+
+    EpubConverter().convert(input_path, output_path)
+
+    assert "末尾换行" in caplog.text
+    with ZipFile(output_path) as archive:
+        assert archive.read("mimetype") == EPUB_MIMETYPE
+
+
 def test_epub2_does_not_receive_epub3_page_direction(
     tmp_path: Path,
     epub_factory: Callable[..., tuple[Path, dict[str, bytes]]],

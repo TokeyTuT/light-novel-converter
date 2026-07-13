@@ -126,6 +126,7 @@ def write_epub(
     include_broken: bool = True,
     mimetype_first: bool = True,
     mimetype_compression: int = ZIP_STORED,
+    mimetype_data: bytes = MIMETYPE,
     spine_direction: str | None = None,
 ) -> dict[str, bytes]:
     """写入最小但结构完整的测试 EPUB。"""
@@ -151,7 +152,7 @@ def write_epub(
         if mimetype_first:
             archive.writestr(
                 "mimetype",
-                MIMETYPE,
+                mimetype_data,
                 compress_type=mimetype_compression,
             )
         for name, data in resources.items():
@@ -167,7 +168,7 @@ def write_epub(
         if not mimetype_first:
             archive.writestr(
                 "mimetype",
-                MIMETYPE,
+                mimetype_data,
                 compress_type=mimetype_compression,
             )
     return resources

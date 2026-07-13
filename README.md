@@ -23,24 +23,40 @@ python -m pip install -r requirements.txt
 
 ## 命令行用法
 
+日常使用只需输入一条命令：
+
 ```bash
-python convert.py input.epub output.epub
+python convert.py
 ```
 
-常用参数：
+程序会先自动打开 Finder，可按住 Command 键多选文件；返回终端后再在菜单中选择
+转换格式、翻页方向、是否覆盖同名输出和失败策略。每个文件都会先进行 EPUB 格式检查，转换
+结束后终端会逐本列出「成功」或「失败」与原因。
+
+输出会放在每本原书同一目录下，文件名为
+`<原文件名>_conceverted.epub`。
+
+如需安装成系统命令，可在项目目录运行：
 
 ```bash
-# 台版竖排常用：下一页位于当前页左侧
+python -m pip install .
+light-novel-converter
+```
+
+仍需保留脚本化自动化时，可直接指定输入、输出和参数：
+
+```bash
+# 单本转换
+python convert.py input.epub output.epub
+
+# 向左翻页（下一页在左侧）
 python convert.py input.epub output.epub --page-direction left
 
-# 覆盖已经存在的输出文件
+# 覆盖已存在的输出文件
 python convert.py input.epub output.epub --force
 
 # 任一章节或目录解析失败时整体失败，不留下半成品
 python convert.py input.epub output.epub --strict
-
-# 打印逐文件调试日志
-python convert.py input.epub output.epub --verbose
 ```
 
 `--page-direction` 控制全书的阅读推进方向：
