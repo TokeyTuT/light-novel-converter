@@ -60,7 +60,10 @@ def test_full_epub_conversion_and_binary_integrity(
     input_path, originals = epub_factory()
     output_path = tmp_path / "output.epub"
 
-    summary = EpubConverter().convert(input_path, output_path)
+    summary = EpubConverter(page_direction="left").convert(
+        input_path,
+        output_path,
+    )
 
     assert summary.skipped_documents == ["OEBPS/Text/broken.xhtml"]
     assert "保留原始字节" in caplog.text
@@ -212,6 +215,66 @@ def test_epub2_does_not_receive_epub3_page_direction(
         )
 
 
+@pytest.mark.parametrize(
+    ("page_direction", "original_direction", "expected_direction"),
+    [
+        ("left", "ltr", "rtl"),
+        ("right", "rtl", "ltr"),
+        ("keep", "default", "default"),
+        ("keep", None, None),
+    ],
+)
+def test_page_direction_mapping_for_epub3(
+    tmp_path: Path,
+    epub_factory: Callable[..., tuple[Path, dict[str, bytes]]],
+    page_direction: str,
+    original_direction: str | None,
+    expected_direction: str | None,
+) -> None:
+    input_path, _ = epub_factory(
+        include_broken=False,
+        spine_direction=original_direction,
+    )
+    output_path = tmp_path / f"direction-{page_direction}.epub"
+
+    EpubConverter(page_direction=page_direction).convert(
+        input_path,
+        output_path,
+    )
+
+    with ZipFile(output_path) as archive:
+        package = parse_xml_from_epub(archive, "OEBPS/content.opf")
+        assert by_local_name(package, "spine")[0].get(
+            "page-progression-direction"
+        ) == expected_direction
+
+
+def test_explicit_left_direction_uses_epub2_compatibility_extension(
+    tmp_path: Path,
+    epub_factory: Callable[..., tuple[Path, dict[str, bytes]]],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    input_path, _ = epub_factory(version="2.0", include_broken=False)
+    output_path = tmp_path / "epub2-left.epub"
+
+    EpubConverter(page_direction="left").convert(input_path, output_path)
+
+    assert "EPUB 2" in caplog.text
+    assert "兼容扩展" in caplog.text
+    with ZipFile(output_path) as archive:
+        package = parse_xml_from_epub(archive, "OEBPS/content.opf")
+        assert by_local_name(package, "spine")[0].get(
+            "page-progression-direction"
+        ) == "rtl"
+
+
+def test_invalid_page_direction_is_rejected() -> None:
+    """程序化调用也必须拒绝 CLI choices 之外的方向。"""
+
+    with pytest.raises(EpubConversionError, match="无效的翻页方向"):
+        EpubConverter(page_direction="up")
+
+
 def test_vertical_style_is_not_duplicated_on_second_run(
     tmp_path: Path,
     epub_factory: Callable[..., tuple[Path, dict[str, bytes]]],
@@ -264,6 +327,8 @@ def test_cli_supports_documented_invocation(
             str(project_root / "convert.py"),
             str(input_path),
             str(output_path),
+            "--page-direction",
+            "left",
         ],
         cwd=project_root,
         capture_output=True,
@@ -274,6 +339,11 @@ def test_cli_supports_documented_invocation(
     assert process.returncode == 0, process.stderr
     assert output_path.is_file()
     assert "转换完成" in process.stderr
+    with ZipFile(output_path) as archive:
+        package = parse_xml_from_epub(archive, "OEBPS/content.opf")
+        assert by_local_name(package, "spine")[0].get(
+            "page-progression-direction"
+        ) == "rtl"
 
 
 def test_input_and_output_must_differ(

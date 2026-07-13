@@ -67,7 +67,11 @@ BROKEN_XHTML = """<?xml version="1.0" encoding="UTF-8"?>
 """.encode()
 
 
-def package_document(version: str = "3.0", include_broken: bool = True) -> bytes:
+def package_document(
+    version: str = "3.0",
+    include_broken: bool = True,
+    spine_direction: str | None = None,
+) -> bytes:
     """构造包含 EPUB 2 NCX 与 EPUB 3 nav 的 OPF。"""
 
     broken_item = (
@@ -83,6 +87,11 @@ def package_document(version: str = "3.0", include_broken: bool = True) -> bytes
         else ""
     )
     nav_properties = ' properties="nav"' if is_epub3 else ""
+    direction_attribute = (
+        f' page-progression-direction="{spine_direction}"'
+        if spine_direction is not None
+        else ""
+    )
     package = f"""<?xml version="1.0" encoding="UTF-8"?>
 <package xmlns="http://www.idpf.org/2007/opf" version="{version}"
          unique-identifier="book-id" xml:lang="zh-CN">
@@ -104,7 +113,7 @@ def package_document(version: str = "3.0", include_broken: bool = True) -> bytes
     <item id="font" href="Fonts/书体.otf" media-type="font/otf"/>
     <item id="css" href="Styles/book.css" media-type="text/css"/>
   </manifest>
-  <spine toc="ncx"><itemref idref="chapter"/></spine>
+  <spine toc="ncx"{direction_attribute}><itemref idref="chapter"/></spine>
 </package>
 """
     return package.encode()
@@ -117,12 +126,17 @@ def write_epub(
     include_broken: bool = True,
     mimetype_first: bool = True,
     mimetype_compression: int = ZIP_STORED,
+    spine_direction: str | None = None,
 ) -> dict[str, bytes]:
     """写入最小但结构完整的测试 EPUB。"""
 
     resources = {
         "META-INF/container.xml": CONTAINER_XML,
-        "OEBPS/content.opf": package_document(version, include_broken),
+        "OEBPS/content.opf": package_document(
+            version,
+            include_broken,
+            spine_direction,
+        ),
         "OEBPS/nav.xhtml": NAV_XHTML,
         "OEBPS/toc.ncx": NCX_XML,
         "OEBPS/Text/chapter.xhtml": CHAPTER_XHTML,

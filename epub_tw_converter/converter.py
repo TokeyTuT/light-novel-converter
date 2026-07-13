@@ -24,7 +24,7 @@ from .errors import (
     UnsafeArchiveError,
 )
 from .index import build_epub_index, detect_unsupported_encryption
-from .models import ConversionSummary, DocumentKind
+from .models import ConversionSummary, DocumentKind, PageDirection
 from .text import TaiwanTextConverter
 
 LOGGER = logging.getLogger(__name__)
@@ -39,9 +39,24 @@ MAX_ARCHIVE_ENTRIES = 100_000
 class EpubConverter:
     """将简体横排 EPUB 转为台湾繁体竖排 EPUB。"""
 
-    def __init__(self, *, strict: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        strict: bool = False,
+        page_direction: PageDirection | str = PageDirection.KEEP,
+    ) -> None:
         self._strict = strict
-        self._transformer = DocumentTransformer(TaiwanTextConverter("s2twp"))
+        try:
+            resolved_direction = PageDirection(page_direction)
+        except ValueError as exc:
+            valid_values = ", ".join(direction.value for direction in PageDirection)
+            raise EpubConversionError(
+                f"无效的翻页方向 {page_direction!r}；可选值：{valid_values}"
+            ) from exc
+        self._transformer = DocumentTransformer(
+            TaiwanTextConverter("s2twp"),
+            page_direction=resolved_direction,
+        )
 
     def convert(
         self,

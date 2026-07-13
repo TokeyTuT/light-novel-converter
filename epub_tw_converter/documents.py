@@ -4,12 +4,13 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from io import BytesIO
+import logging
 import re
 
 from lxml import etree
 
 from .errors import DocumentParseError, EpubConversionError
-from .models import DocumentKind, TransformResult
+from .models import DocumentKind, PageDirection, TransformResult
 from .text import TaiwanTextConverter
 from .xml_utils import (
     DC_NAMESPACE,
@@ -22,6 +23,7 @@ from .xml_utils import (
 )
 
 VERTICAL_STYLE_ID = "lnc-vertical-style"
+LOGGER = logging.getLogger(__name__)
 VERTICAL_CSS = """/* 由 light-novel-converter 注入：台湾繁体竖排 */
 html,
 body {
@@ -43,6 +45,22 @@ HUMAN_READABLE_ATTRIBUTES = {
     "title",
 }
 SUPPRESSED_TEXT_ELEMENTS = {"script", "style"}
+LAYOUT_IGNORED_TEXT_ELEMENTS = {"script", "style", "template"}
+LAYOUT_IGNORABLE_ENTITY_NAMES = {
+    "emsp",
+    "ensp",
+    "hairsp",
+    "lrm",
+    "nbsp",
+    "numsp",
+    "puncsp",
+    "rlm",
+    "shy",
+    "thinsp",
+    "zerowidthspace",
+    "zwj",
+    "zwnj",
+}
 FLOW_BOUNDARY_ELEMENTS = {
     "address",
     "article",
@@ -129,8 +147,13 @@ def _is_simplified_chinese_language(value: str) -> bool:
 class DocumentTransformer:
     """对 EPUB 内的不同文本资源执行安全、定向转换。"""
 
-    def __init__(self, text_converter: TaiwanTextConverter) -> None:
+    def __init__(
+        self,
+        text_converter: TaiwanTextConverter,
+        page_direction: PageDirection = PageDirection.KEEP,
+    ) -> None:
         self._text_converter = text_converter
+        self._page_direction = page_direction
 
     def transform(
         self,
@@ -149,7 +172,7 @@ class DocumentTransformer:
         if kind is DocumentKind.NCX:
             return self._transform_ncx(tree)
         if kind is DocumentKind.PACKAGE:
-            return self._transform_package(tree)
+            return self._transform_package(tree, member_name)
         raise EpubConversionError(f"不支持的文档类型：{kind}")
 
     def _convert_value(self, value: str | None) -> tuple[str | None, int]:
@@ -419,6 +442,108 @@ class DocumentTransformer:
         head.append(style)
         return True
 
+    @staticmethod
+    def _remove_vertical_style(root: etree._Element) -> bool:
+        """从纯图片页移除旧版本曾经注入的竖排样式。"""
+
+        head = next(
+            (
+                element
+                for element in root.iter()
+                if local_name(element.tag).lower() == "head"
+            ),
+            None,
+        )
+        if head is None:
+            return False
+
+        changed = False
+        # 转换器只会把该样式注入 head。将清理范围限定在
+        # head，避免误删 inline SVG 内恰好同 ID 的作者样式。
+        for element in list(head.iter()):
+            if (
+                local_name(element.tag).lower() == "style"
+                and element.get("id") == VERTICAL_STYLE_ID
+            ):
+                parent = element.getparent()
+                if parent is not None:
+                    parent.remove(element)
+                    changed = True
+        return changed
+
+    def _is_image_only_document(self, root: etree._Element) -> bool:
+        """判断 body 是否只由一张或多张图片及无文本包装元素组成。"""
+
+        body = self._find_first(root, "body")
+        if body is None:
+            return False
+
+        has_image = False
+        has_visible_text = False
+        ignored_characters = {"\u200b", "\u200c", "\u200d", "\ufeff"}
+
+        def is_meaningful(value: str | None) -> bool:
+            if not value:
+                return False
+            return any(
+                not character.isspace() and character not in ignored_characters
+                for character in value
+            )
+
+        def visit(element: etree._Element) -> None:
+            nonlocal has_image, has_visible_text
+            name = local_name(element.tag).lower()
+            if name in LAYOUT_IGNORED_TEXT_ELEMENTS:
+                return
+
+            if name in {"img", "picture", "svg"}:
+                has_image = True
+                # SVG 的 text/title/desc 都属于插画自身，不能把它们误认为正文。
+                if name == "svg":
+                    return
+            elif name == "object":
+                media_type = (element.get("type") or "").lower()
+                data_path = (element.get("data") or "").lower()
+                if media_type.startswith("image/") or data_path.endswith(
+                    (".avif", ".gif", ".jpeg", ".jpg", ".png", ".svg", ".webp")
+                ):
+                    has_image = True
+                    return
+
+            inline_style = (element.get("style") or "").lower()
+            if "background-image" in inline_style or (
+                "background" in inline_style and "url(" in inline_style
+            ):
+                has_image = True
+
+            if is_meaningful(element.text):
+                has_visible_text = True
+
+            for child in element:
+                if isinstance(child.tag, str):
+                    visit(child)
+                elif isinstance(child, etree._Entity):
+                    # 安全解析器不展开 XML 实体，无法在此确定其是
+                    # 空白还是正文。常见空白/格式实体可安全忽略，
+                    # 其余实体则按可见内容保守处理。
+                    entity_name = (child.name or "").lower()
+                    if entity_name not in LAYOUT_IGNORABLE_ENTITY_NAMES:
+                        has_visible_text = True
+                if is_meaningful(child.tail):
+                    has_visible_text = True
+
+        visit(body)
+        return has_image and not has_visible_text
+
+    def _update_content_layout(self, root: etree._Element) -> bool:
+        """正文注入竖排；纯图片页保留原横排几何并清理旧注入。"""
+
+        # 部分电子书用连续的 inline <img> 拼成跨页插画。
+        # vertical-rl 会旋转 inline 轴，导致阅读器把切片分到不同分页。
+        if self._is_image_only_document(root):
+            return self._remove_vertical_style(root)
+        return self._ensure_vertical_style(root)
+
     def _normalise_utf8_meta(
         self,
         root: etree._Element,
@@ -488,7 +613,7 @@ class DocumentTransformer:
             root,
             html_syntax=served_as_html,
         )
-        layout_changed = self._ensure_vertical_style(root)
+        layout_changed = self._update_content_layout(root)
         layout_changed |= self._normalise_utf8_meta(
             root,
             add_if_missing=served_as_html,
@@ -553,7 +678,7 @@ class DocumentTransformer:
             root,
             html_syntax=True,
         )
-        layout_changed = self._ensure_vertical_style(root)
+        layout_changed = self._update_content_layout(root)
         layout_changed |= self._normalise_utf8_meta(
             root,
             add_if_missing=True,
@@ -599,7 +724,11 @@ class DocumentTransformer:
             changed_nodes=changed_nodes,
         )
 
-    def _transform_package(self, tree: etree._ElementTree) -> TransformResult:
+    def _transform_package(
+        self,
+        tree: etree._ElementTree,
+        member_name: str,
+    ) -> TransformResult:
         root = tree.getroot()
         changed_nodes = self._normalise_existing_language_attributes(root)
 
@@ -652,7 +781,7 @@ class DocumentTransformer:
                         element.set("content", converted)
                     changed_nodes += delta
 
-        layout_changed = self._update_package_layout(root)
+        layout_changed = self._update_package_layout(root, member_name)
         if layout_changed:
             changed_nodes += 1
 
@@ -662,9 +791,12 @@ class DocumentTransformer:
             layout_changed=layout_changed,
         )
 
-    @staticmethod
-    def _update_package_layout(root: etree._Element) -> bool:
-        """EPUB 3 设置从右向左翻页，并刷新修改时间。"""
+    def _update_package_layout(
+        self,
+        root: etree._Element,
+        member_name: str,
+    ) -> bool:
+        """按用户选项设置翻页方向，并刷新 EPUB 3 修改时间。"""
 
         version_text = (root.get("version") or "").strip()
         try:
@@ -672,16 +804,28 @@ class DocumentTransformer:
         except (TypeError, ValueError):
             major_version = 0
 
-        if major_version < 3:
+        progression = self._page_direction.progression
+        if major_version < 2:
             return False
 
         changed = False
-        for element in root.iter():
-            if local_name(element.tag) == "spine":
-                if element.get("page-progression-direction") != "rtl":
-                    element.set("page-progression-direction", "rtl")
-                    changed = True
-                break
+        if progression is not None:
+            if major_version == 2:
+                LOGGER.warning(
+                    "%s 是 EPUB 2；将 page-progression-direction=%s 作为"
+                    "阅读器兼容扩展写入，可能无法通过严格 EPUB 2 校验。",
+                    member_name,
+                    progression,
+                )
+            for element in root.iter():
+                if local_name(element.tag) == "spine":
+                    if element.get("page-progression-direction") != progression:
+                        element.set("page-progression-direction", progression)
+                        changed = True
+                    break
+
+        if major_version < 3:
+            return changed
 
         metadata = None
         modified_metas: list[etree._Element] = []

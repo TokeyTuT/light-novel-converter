@@ -9,6 +9,7 @@ from pathlib import Path
 
 from .converter import EpubConverter
 from .errors import EpubConversionError
+from .models import PageDirection
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -20,6 +21,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("input", type=Path, help="输入 EPUB 文件")
     parser.add_argument("output", type=Path, help="输出 EPUB 文件")
+    parser.add_argument(
+        "--page-direction",
+        choices=[direction.value for direction in PageDirection],
+        default=PageDirection.KEEP.value,
+        help=(
+            "下一页位置：left=下一页在左侧（OPF rtl），"
+            "right=下一页在右侧（OPF ltr），keep=保留原书"
+        ),
+    )
     parser.add_argument(
         "-f",
         "--force",
@@ -56,7 +66,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     configure_logging(args.verbose)
 
     try:
-        summary = EpubConverter(strict=args.strict).convert(
+        summary = EpubConverter(
+            strict=args.strict,
+            page_direction=args.page_direction,
+        ).convert(
             args.input,
             args.output,
             overwrite=args.force,
@@ -78,4 +91,3 @@ def main(argv: Sequence[str] | None = None) -> int:
     if summary.skipped_documents:
         logging.warning("跳过列表：%s", "、".join(summary.skipped_documents))
     return 0
-

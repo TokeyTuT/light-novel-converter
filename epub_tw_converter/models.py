@@ -15,6 +15,24 @@ class DocumentKind(str, Enum):
     PACKAGE = "package"
 
 
+class PageDirection(str, Enum):
+    """用户看到的下一页位置。"""
+
+    LEFT = "left"
+    RIGHT = "right"
+    KEEP = "keep"
+
+    @property
+    def progression(self) -> str | None:
+        """映射为 OPF page-progression-direction。"""
+
+        if self is PageDirection.LEFT:
+            return "rtl"
+        if self is PageDirection.RIGHT:
+            return "ltr"
+        return None
+
+
 @dataclass(frozen=True)
 class TransformResult:
     """单个文档转换后的结果。"""
@@ -40,4 +58,3 @@ class ConversionSummary:
         """返回因解析错误而跳过的文档数量。"""
 
         return len(self.skipped_documents)
-

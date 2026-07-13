@@ -8,7 +8,10 @@ from time import perf_counter
 import pytest
 from lxml import etree
 
-from epub_tw_converter.documents import DocumentTransformer
+from epub_tw_converter.documents import (
+    VERTICAL_STYLE_ID,
+    DocumentTransformer,
+)
 from epub_tw_converter.errors import DocumentParseError
 from epub_tw_converter.models import DocumentKind
 from epub_tw_converter.text import TaiwanTextConverter
@@ -200,3 +203,230 @@ def test_ruby_annotations_do_not_break_base_text_context(
     )
     assert base_text == "頭髮"
     assert [annotation.text for annotation in annotations] == ["tou", "fa"]
+
+
+@pytest.mark.parametrize("image_count", [1, 4])
+def test_image_only_xhtml_keeps_original_image_composition(
+    transformer: DocumentTransformer,
+    image_count: int,
+) -> None:
+    """单图封面与多切片彩页不应被竖排样式改变几何排列。"""
+
+    image_markup = "\n".join(
+        f'<img src="../Images/cy{index}.jpg" alt="网络插画" '
+        f'title="软件彩图" width="{600 + index}" height="1600" '
+        f'style="vertical-align: top" data-index="{index}" />'
+        for index in range(1, image_count + 1)
+    )
+    source = f"""<?xml version="1.0" encoding="UTF-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="zh-CN">
+<head>
+  <title>网络彩页</title>
+  <style id="author-style">img {{ margin: 0; }}</style>
+</head>
+<body>&#160;<div>&#8203;{image_markup}</div></body>
+</html>
+""".encode()
+
+    result = transformer.transform(
+        source,
+        DocumentKind.XHTML,
+        "illustration.xhtml",
+    )
+
+    root = etree.fromstring(result.data)
+    vertical_styles = root.xpath(
+        f'//*[local-name()="style" and @id="{VERTICAL_STYLE_ID}"]'
+    )
+    assert vertical_styles == []
+
+    author_style = root.xpath(
+        '//*[local-name()="style" and @id="author-style"]'
+    )[0]
+    assert author_style.text == "img { margin: 0; }"
+
+    images = root.xpath('//*[local-name()="body"]//*[local-name()="img"]')
+    assert [image.get("src") for image in images] == [
+        f"../Images/cy{index}.jpg"
+        for index in range(1, image_count + 1)
+    ]
+    assert [image.get("data-index") for image in images] == [
+        str(index) for index in range(1, image_count + 1)
+    ]
+    assert [image.get("width") for image in images] == [
+        str(600 + index) for index in range(1, image_count + 1)
+    ]
+    assert all(image.get("height") == "1600" for image in images)
+    assert all(image.get("style") == "vertical-align: top" for image in images)
+    assert all(image.get("alt") == "網路插畫" for image in images)
+    assert all(image.get("title") == "軟體彩圖" for image in images)
+    assert root.get("{http://www.w3.org/XML/1998/namespace}lang") == "zh-TW"
+
+
+def test_inline_svg_only_page_preserves_svg_geometry(
+    transformer: DocumentTransformer,
+) -> None:
+    """纯 SVG 插画页保留大小写敏感属性与资源引用。"""
+
+    source = """<?xml version="1.0" encoding="UTF-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml"
+      xmlns:svg="http://www.w3.org/2000/svg"
+      xmlns:xlink="http://www.w3.org/1999/xlink">
+<head><title>网络插画</title></head>
+<body>
+  <svg:svg width="1200" height="1600" viewBox="0 0 1200 1600"
+           preserveAspectRatio="xMidYMid meet">
+    <svg:style id="lnc-vertical-style">.frame { fill: none; }</svg:style>
+    <svg:title>网络图片</svg:title>
+    <svg:desc>软件说明</svg:desc>
+    <svg:image width="1200" height="1600"
+               xlink:href="../Images/程序-cover.jpg" />
+    <svg:text x="10" y="20">程序网络</svg:text>
+  </svg:svg>
+</body>
+</html>
+""".encode()
+
+    result = transformer.transform(
+        source,
+        DocumentKind.XHTML,
+        "svg-illustration.xhtml",
+    )
+
+    root = etree.fromstring(result.data)
+    assert not root.xpath(
+        f'//*[local-name()="head"]//*['
+        f'local-name()="style" and @id="{VERTICAL_STYLE_ID}"]'
+    )
+    svg = root.xpath('//*[local-name()="svg"]')[0]
+    assert svg.get("width") == "1200"
+    assert svg.get("height") == "1600"
+    assert svg.get("viewBox") == "0 0 1200 1600"
+    assert svg.get("preserveAspectRatio") == "xMidYMid meet"
+    svg_style = root.xpath(
+        '//*[local-name()="svg"]/*[local-name()="style"]'
+    )[0]
+    assert svg_style.get("id") == VERTICAL_STYLE_ID
+    assert svg_style.text == ".frame { fill: none; }"
+    image = root.xpath('//*[local-name()="svg"]/*[local-name()="image"]')[0]
+    assert image.get("{http://www.w3.org/1999/xlink}href") == (
+        "../Images/程序-cover.jpg"
+    )
+    assert "程式網路" in "".join(root.itertext())
+
+
+def test_old_vertical_style_is_removed_from_image_only_page_idempotently(
+    transformer: DocumentTransformer,
+) -> None:
+    """重新处理旧输出时移除错误样式，并保留作者自有 CSS。"""
+
+    source = f"""<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="zh-CN">
+<head>
+  <title>封面</title>
+  <style id="author-style">img {{ display: inline; }}</style>
+  <style id="{VERTICAL_STYLE_ID}" type="text/css">
+    html, body {{ writing-mode: vertical-rl !important; }}
+  </style>
+</head>
+<body><img src="../Images/cover.jpg" alt="网络封面" /></body>
+</html>""".encode()
+
+    first = transformer.transform(source, DocumentKind.XHTML, "cover.xhtml")
+    second = transformer.transform(
+        first.data,
+        DocumentKind.XHTML,
+        "cover.xhtml",
+    )
+
+    assert first.layout_changed is True
+    assert second.layout_changed is False
+    assert first.data == second.data
+    root = etree.fromstring(second.data)
+    assert not root.xpath(
+        f'//*[local-name()="style" and @id="{VERTICAL_STYLE_ID}"]'
+    )
+    author_style = root.xpath(
+        '//*[local-name()="style" and @id="author-style"]'
+    )[0]
+    assert author_style.text == "img { display: inline; }"
+    image = root.xpath('//*[local-name()="img"]')[0]
+    assert image.get("src") == "../Images/cover.jpg"
+    assert image.get("alt") == "網路封面"
+
+
+def test_template_text_is_converted_without_affecting_static_image_layout(
+    transformer: DocumentTransformer,
+) -> None:
+    """template 当前不可见，但其中文仍须完成转换。"""
+
+    source = """<html xmlns="http://www.w3.org/1999/xhtml">
+<head><title>彩页</title></head>
+<body>
+  <img src="../Images/cover.jpg" alt="封面" />
+  <template><p>程序网络软件</p></template>
+</body>
+</html>""".encode()
+
+    result = transformer.transform(
+        source,
+        DocumentKind.XHTML,
+        "template-illustration.xhtml",
+    )
+
+    root = etree.fromstring(result.data)
+    assert not root.xpath(
+        f'//*[local-name()="head"]/*['
+        f'local-name()="style" and @id="{VERTICAL_STYLE_ID}"]'
+    )
+    template = root.xpath('//*[local-name()="template"]')[0]
+    assert "".join(template.itertext()) == "程式網路軟體"
+
+
+def test_unresolved_entity_prevents_image_only_classification(
+    transformer: DocumentTransformer,
+) -> None:
+    """实体内容未展开时按可见正文保守处理。"""
+
+    source = """<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html [<!ENTITY caption "程序网络">]>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head><title>插画</title></head>
+<body><img src="../Images/cover.jpg" />&caption;</body>
+</html>""".encode()
+
+    result = transformer.transform(
+        source,
+        DocumentKind.XHTML,
+        "entity-caption.xhtml",
+    )
+
+    root = etree.fromstring(result.data)
+    assert root.xpath(
+        f'//*[local-name()="head"]/*['
+        f'local-name()="style" and @id="{VERTICAL_STYLE_ID}"]'
+    )
+
+
+def test_nonbreaking_space_entity_is_ignored_on_image_only_page(
+    transformer: DocumentTransformer,
+) -> None:
+    """XHTML 常见 &nbsp; 不应让纯图页重新获得竖排样式。"""
+
+    source = """<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html [<!ENTITY nbsp "&#160;">]>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head><title>插画</title></head>
+<body><img src="../Images/cover.jpg" />&nbsp;</body>
+</html>""".encode()
+
+    result = transformer.transform(
+        source,
+        DocumentKind.XHTML,
+        "entity-whitespace.xhtml",
+    )
+
+    root = parse_xml(result.data, "entity-whitespace.xhtml").getroot()
+    assert not root.xpath(
+        f'//*[local-name()="head"]/*['
+        f'local-name()="style" and @id="{VERTICAL_STYLE_ID}"]'
+    )

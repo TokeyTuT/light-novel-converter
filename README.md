@@ -30,6 +30,9 @@ python convert.py input.epub output.epub
 常用参数：
 
 ```bash
+# 台版竖排常用：下一页位于当前页左侧
+python convert.py input.epub output.epub --page-direction left
+
 # 覆盖已经存在的输出文件
 python convert.py input.epub output.epub --force
 
@@ -39,6 +42,19 @@ python convert.py input.epub output.epub --strict
 # 打印逐文件调试日志
 python convert.py input.epub output.epub --verbose
 ```
+
+`--page-direction` 控制全书的阅读推进方向：
+
+- `left`：下一页在左侧，写入
+  `spine@page-progression-direction="rtl"`；
+- `right`：下一页在右侧，写入
+  `spine@page-progression-direction="ltr"`；
+- `keep`：保留原书设置，这是默认值。
+
+这个属性是 EPUB 3 的标准写法。如果输入是 EPUB 2，只有在显式指定
+`left` 或 `right` 时，转换器才会将它作为 Apple Books 等阅读器可能
+识别的兼容扩展写入，并打印 `WARNING`。这类 EPUB 2 输出可能无法通过
+严格的 OPF 2 校验；不指定时不会改动原书方向。
 
 默认模式下，如果某个普通 XHTML/HTML/NCX 文件无法解析，脚本会打印
 `WARNING`，在输出 EPUB 中原样保留该文件，并继续处理其他章节。作为 EPUB
@@ -55,8 +71,12 @@ python convert.py input.epub output.epub --verbose
 - XHTML/HTML：幂等注入带固定 ID 的竖排 CSS，使用标准、WebKit 和 EPUB
   前缀，并设置 `text-orientation: mixed`。全角标点由阅读器结合字体的竖排
   字形自动呈现，不替换成兼容区竖排字符，以免损害复制和搜索。
-- EPUB 3 OPF：设置 `spine@page-progression-direction="rtl"`，并更新
-  `dcterms:modified`。EPUB 2 不添加该 EPUB 3 属性。
+- 纯图片 XHTML/HTML 页（封面、单张插画、多切片拼图或 SVG）不注入
+  竖排 CSS，以保留原书的图片次序、尺寸和拼接几何。重新转换旧版已生成
+  的 EPUB 时，也会从纯图片页移除转换器曾经错误注入的样式；作者原有
+  CSS 不受影响。
+- EPUB 3 OPF：根据 `--page-direction` 设定或保留翻页方向，并更新
+  `dcterms:modified`。
 
 ## 文件完整性策略
 
@@ -83,7 +103,8 @@ python -m pytest
 ```
 
 测试会动态构造 EPUB 2/3 样本，并验证 OpenCC 语境转换、嵌套文本、OPF、
-NCX、导航、竖排 CSS、损坏章节跳过、二进制资源哈希和 ZIP 封装。
+NCX、导航、翻页方向、竖排 CSS、纯图片页拼接保护、损坏章节跳过、
+二进制资源哈希和 ZIP 封装。
 
 如需做发布前验证，建议额外使用官方 EPUBCheck，并在 Apple Books 中人工
 检查目标字体对全角引号、括号等竖排字形的支持情况。
