@@ -9,6 +9,9 @@ import pytest
 from lxml import etree
 
 from epub_tw_converter.documents import (
+    ILLUSTRATION_PAGE_CLASS,
+    ILLUSTRATION_PAGE_CSS,
+    ILLUSTRATION_PAGE_STYLE_ID,
     VERTICAL_STYLE_ID,
     DocumentTransformer,
 )
@@ -261,6 +264,51 @@ def test_image_only_xhtml_keeps_original_image_composition(
     assert all(image.get("alt") == "網路插畫" for image in images)
     assert all(image.get("title") == "軟體彩圖" for image in images)
     assert root.get("{http://www.w3.org/XML/1998/namespace}lang") == "zh-TW"
+
+    page_styles = root.xpath(
+        f'//*[local-name()="head"]//*['
+        f'local-name()="style" and @id="{ILLUSTRATION_PAGE_STYLE_ID}"]'
+    )
+    if image_count == 1:
+        assert page_styles == []
+        assert images[0].get("class") is None
+    else:
+        assert len(page_styles) == 1
+        assert page_styles[0].text == ILLUSTRATION_PAGE_CSS
+        assert [image.get("class") for image in images] == [
+            None,
+            *[ILLUSTRATION_PAGE_CLASS] * (image_count - 1),
+        ]
+
+
+def test_illustration_after_prose_starts_on_a_new_page(
+    transformer: DocumentTransformer,
+) -> None:
+    """文字之后的插画应从新页开始，但正文仍使用竖排。"""
+
+    source = """<html xmlns="http://www.w3.org/1999/xhtml">
+<head><title>章节</title></head>
+<body><p>程序网络</p><img src="../Images/c1.jpg" alt="插画" /></body>
+</html>""".encode()
+
+    result = transformer.transform(
+        source,
+        DocumentKind.XHTML,
+        "chapter-with-illustration.xhtml",
+    )
+
+    root = etree.fromstring(result.data)
+    image = root.xpath('//*[local-name()="img"]')[0]
+    assert image.get("class") == ILLUSTRATION_PAGE_CLASS
+    page_style = root.xpath(
+        f'//*[local-name()="head"]//*['
+        f'local-name()="style" and @id="{ILLUSTRATION_PAGE_STYLE_ID}"]'
+    )[0]
+    assert page_style.text == ILLUSTRATION_PAGE_CSS
+    assert root.xpath(
+        f'//*[local-name()="head"]//*['
+        f'local-name()="style" and @id="{VERTICAL_STYLE_ID}"]'
+    )
 
 
 def test_inline_svg_only_page_preserves_svg_geometry(

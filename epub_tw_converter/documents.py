@@ -23,6 +23,8 @@ from .xml_utils import (
 )
 
 VERTICAL_STYLE_ID = "lnc-vertical-style"
+ILLUSTRATION_PAGE_STYLE_ID = "lnc-illustration-page-style"
+ILLUSTRATION_PAGE_CLASS = "lnc-illustration-page"
 LOGGER = logging.getLogger(__name__)
 VERTICAL_CSS = """/* 由 light-novel-converter 注入：台湾繁体竖排 */
 html,
@@ -36,6 +38,14 @@ body {
     line-break: strict !important;
 }
 """
+ILLUSTRATION_PAGE_CSS = """/* 由 light-novel-converter 注入：插画从新页开始 */
+.lnc-illustration-page {
+    display: block !important;
+    -webkit-column-break-before: always;
+    break-before: page;
+    page-break-before: always;
+}
+"""
 
 HUMAN_READABLE_ATTRIBUTES = {
     "alt",
@@ -46,6 +56,7 @@ HUMAN_READABLE_ATTRIBUTES = {
 }
 SUPPRESSED_TEXT_ELEMENTS = {"script", "style"}
 LAYOUT_IGNORED_TEXT_ELEMENTS = {"script", "style", "template"}
+ILLUSTRATION_ELEMENTS = {"img", "picture", "svg"}
 LAYOUT_IGNORABLE_ENTITY_NAMES = {
     "emsp",
     "ensp",
@@ -401,34 +412,45 @@ class DocumentTransformer:
                 return element
         return None
 
-    def _ensure_vertical_style(self, root: etree._Element) -> bool:
-        """幂等地注入根级竖排 CSS，不改写图片或字体引用。"""
+    def _get_or_create_head(self, root: etree._Element) -> etree._Element:
+        """取得 head，缺失时以与旧逻辑相同的方式安全创建。"""
 
         head = self._find_first(root, "head")
-        if head is None:
-            if local_name(root.tag).lower() != "html":
-                raise DocumentParseError("文档根节点不是 html，无法安全注入竖排样式")
+        if head is not None:
+            return head
 
-            namespace = namespace_uri(root.tag)
-            head = etree.Element(qualified_name(namespace, "head"))
-            body = self._find_first(root, "body")
-            if body is None:
-                root.insert(0, head)
-            else:
-                root.insert(root.index(body), head)
+        if local_name(root.tag).lower() != "html":
+            raise DocumentParseError("文档根节点不是 html，无法安全注入样式")
+
+        namespace = namespace_uri(root.tag)
+        head = etree.Element(qualified_name(namespace, "head"))
+        body = self._find_first(root, "body")
+        if body is None:
+            root.insert(0, head)
+        else:
+            root.insert(root.index(body), head)
+        return head
+
+    @staticmethod
+    def _ensure_injected_style(
+        head: etree._Element,
+        style_id: str,
+        css: str,
+    ) -> bool:
+        """幂等地写入转换器专用的样式节点。"""
 
         existing: etree._Element | None = None
         for element in head.iter():
             if (
                 local_name(element.tag).lower() == "style"
-                and element.get("id") == VERTICAL_STYLE_ID
+                and element.get("id") == style_id
             ):
                 existing = element
                 break
 
         if existing is not None:
-            changed = existing.text != VERTICAL_CSS
-            existing.text = VERTICAL_CSS
+            changed = existing.text != css
+            existing.text = css
             if existing.get("type") != "text/css":
                 existing.set("type", "text/css")
                 changed = True
@@ -436,11 +458,31 @@ class DocumentTransformer:
 
         namespace = namespace_uri(head.tag)
         style = etree.Element(qualified_name(namespace, "style"))
-        style.set("id", VERTICAL_STYLE_ID)
+        style.set("id", style_id)
         style.set("type", "text/css")
-        style.text = VERTICAL_CSS
+        style.text = css
         head.append(style)
         return True
+
+    def _ensure_vertical_style(self, root: etree._Element) -> bool:
+        """幂等地注入根级竖排 CSS，不改写图片或字体引用。"""
+
+        head = self._get_or_create_head(root)
+        return self._ensure_injected_style(
+            head,
+            VERTICAL_STYLE_ID,
+            VERTICAL_CSS,
+        )
+
+    def _ensure_illustration_page_style(self, root: etree._Element) -> bool:
+        """为已标记的插画写入从新页开始的 CSS。"""
+
+        head = self._get_or_create_head(root)
+        return self._ensure_injected_style(
+            head,
+            ILLUSTRATION_PAGE_STYLE_ID,
+            ILLUSTRATION_PAGE_CSS,
+        )
 
     @staticmethod
     def _remove_vertical_style(root: etree._Element) -> bool:
@@ -471,6 +513,81 @@ class DocumentTransformer:
                     changed = True
         return changed
 
+    @staticmethod
+    def _has_meaningful_layout_text(value: str | None) -> bool:
+        """返回字符串是否包含影响排版判断的可见文字。"""
+
+        if not value:
+            return False
+        ignored_characters = {"\u200b", "\u200c", "\u200d", "\ufeff"}
+        return any(
+            not character.isspace() and character not in ignored_characters
+            for character in value
+        )
+
+    @staticmethod
+    def _is_ignorable_layout_entity(entity: etree._Entity) -> bool:
+        """返回未展开实体是否仅表示空白或格式字符。"""
+
+        return (entity.name or "").lower() in LAYOUT_IGNORABLE_ENTITY_NAMES
+
+    @staticmethod
+    def _append_css_class(element: etree._Element, class_name: str) -> bool:
+        """不覆盖作者原有 class，幂等地追加转换器 class。"""
+
+        classes = (element.get("class") or "").split()
+        if class_name in classes:
+            return False
+        classes.append(class_name)
+        element.set("class", " ".join(classes))
+        return True
+
+    def _mark_illustration_page_breaks(
+        self,
+        root: etree._Element,
+    ) -> tuple[bool, bool]:
+        """标记还有之前正文或插画的图像，令其从新页开始。"""
+
+        body = self._find_first(root, "body")
+        if body is None:
+            return False, False
+
+        changed = False
+        has_page_break = False
+        seen_rendered_content = False
+
+        def visit(element: etree._Element) -> None:
+            nonlocal changed, has_page_break, seen_rendered_content
+            name = local_name(element.tag).lower()
+            if name in LAYOUT_IGNORED_TEXT_ELEMENTS:
+                return
+
+            # picture/SVG 视为一个插画容器，不进入子树重复标记。
+            if name in ILLUSTRATION_ELEMENTS:
+                if seen_rendered_content:
+                    changed |= self._append_css_class(
+                        element,
+                        ILLUSTRATION_PAGE_CLASS,
+                    )
+                    has_page_break = True
+                seen_rendered_content = True
+                return
+
+            if self._has_meaningful_layout_text(element.text):
+                seen_rendered_content = True
+
+            for child in element:
+                if isinstance(child.tag, str):
+                    visit(child)
+                elif isinstance(child, etree._Entity):
+                    if not self._is_ignorable_layout_entity(child):
+                        seen_rendered_content = True
+                if self._has_meaningful_layout_text(child.tail):
+                    seen_rendered_content = True
+
+        visit(body)
+        return changed, has_page_break
+
     def _is_image_only_document(self, root: etree._Element) -> bool:
         """判断 body 是否只由一张或多张图片及无文本包装元素组成。"""
 
@@ -480,15 +597,6 @@ class DocumentTransformer:
 
         has_image = False
         has_visible_text = False
-        ignored_characters = {"\u200b", "\u200c", "\u200d", "\ufeff"}
-
-        def is_meaningful(value: str | None) -> bool:
-            if not value:
-                return False
-            return any(
-                not character.isspace() and character not in ignored_characters
-                for character in value
-            )
 
         def visit(element: etree._Element) -> None:
             nonlocal has_image, has_visible_text
@@ -516,7 +624,7 @@ class DocumentTransformer:
             ):
                 has_image = True
 
-            if is_meaningful(element.text):
+            if self._has_meaningful_layout_text(element.text):
                 has_visible_text = True
 
             for child in element:
@@ -526,23 +634,31 @@ class DocumentTransformer:
                     # 安全解析器不展开 XML 实体，无法在此确定其是
                     # 空白还是正文。常见空白/格式实体可安全忽略，
                     # 其余实体则按可见内容保守处理。
-                    entity_name = (child.name or "").lower()
-                    if entity_name not in LAYOUT_IGNORABLE_ENTITY_NAMES:
+                    if not self._is_ignorable_layout_entity(child):
                         has_visible_text = True
-                if is_meaningful(child.tail):
+                if self._has_meaningful_layout_text(child.tail):
                     has_visible_text = True
 
         visit(body)
         return has_image and not has_visible_text
 
     def _update_content_layout(self, root: etree._Element) -> bool:
-        """正文注入竖排；纯图片页保留原横排几何并清理旧注入。"""
+        """正文注入竖排；纯图页保留几何，插画从新页开始。"""
 
         # 部分电子书用连续的 inline <img> 拼成跨页插画。
         # vertical-rl 会旋转 inline 轴，导致阅读器把切片分到不同分页。
         if self._is_image_only_document(root):
-            return self._remove_vertical_style(root)
-        return self._ensure_vertical_style(root)
+            changed = self._remove_vertical_style(root)
+        else:
+            changed = self._ensure_vertical_style(root)
+
+        page_break_changed, has_page_break = self._mark_illustration_page_breaks(
+            root,
+        )
+        changed |= page_break_changed
+        if has_page_break:
+            changed |= self._ensure_illustration_page_style(root)
+        return changed
 
     def _normalise_utf8_meta(
         self,

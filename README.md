@@ -75,6 +75,9 @@ python convert.py input.epub output.epub --verbose
   竖排 CSS，以保留原书的图片次序、尺寸和拼接几何。重新转换旧版已生成
   的 EPUB 时，也会从纯图片页移除转换器曾经错误注入的样式；作者原有
   CSS 不受影响。
+- 插画会从新页开始：文字之后的第一张插画会先分页，紧跟的多张
+  插画也会逐张分页。封面或 XHTML 开头的第一张插画不额外插入
+  空白页。这只注入分页 CSS，不改写图片尺寸、资源引用或作者 CSS。
 - EPUB 3 OPF：根据 `--page-direction` 设定或保留翻页方向，并更新
   `dcterms:modified`。
 
@@ -104,7 +107,7 @@ python -m pytest
 
 测试会动态构造 EPUB 2/3 样本，并验证 OpenCC 语境转换、嵌套文本、OPF、
 NCX、导航、翻页方向、竖排 CSS、纯图片页拼接保护、损坏章节跳过、
-二进制资源哈希和 ZIP 封装。
+插画分页、二进制资源哈希和 ZIP 封装。
 
 如需做发布前验证，建议额外使用官方 EPUBCheck，并在 Apple Books 中人工
 检查目标字体对全角引号、括号等竖排字形的支持情况。
