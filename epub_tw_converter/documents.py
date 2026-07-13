@@ -25,6 +25,8 @@ from .xml_utils import (
 VERTICAL_STYLE_ID = "lnc-vertical-style"
 ILLUSTRATION_PAGE_STYLE_ID = "lnc-illustration-page-style"
 ILLUSTRATION_PAGE_CLASS = "lnc-illustration-page"
+ILLUSTRATION_START_CLASS = "lnc-illustration-start"
+ILLUSTRATION_END_CLASS = "lnc-illustration-end"
 LOGGER = logging.getLogger(__name__)
 VERTICAL_CSS = """/* 由 light-novel-converter 注入：台湾繁体竖排 */
 html,
@@ -41,9 +43,16 @@ body {
 ILLUSTRATION_PAGE_CSS = """/* 由 light-novel-converter 注入：插画从新页开始 */
 .lnc-illustration-page {
     display: block !important;
+}
+.lnc-illustration-start {
     -webkit-column-break-before: always;
     break-before: page;
     page-break-before: always;
+}
+.lnc-illustration-end {
+    -webkit-column-break-after: always;
+    break-after: page;
+    page-break-after: always;
 }
 """
 
@@ -546,47 +555,65 @@ class DocumentTransformer:
         self,
         root: etree._Element,
     ) -> tuple[bool, bool]:
-        """标记还有之前正文或插画的图像，令其从新页开始。"""
+        """标记插画前后的分页，令图片不与正文同页。"""
 
         body = self._find_first(root, "body")
         if body is None:
             return False, False
 
-        changed = False
-        has_page_break = False
-        seen_rendered_content = False
+        events: list[tuple[str, etree._Element | None]] = []
 
-        def visit(element: etree._Element) -> None:
-            nonlocal changed, has_page_break, seen_rendered_content
+        def collect_events(element: etree._Element) -> None:
             name = local_name(element.tag).lower()
             if name in LAYOUT_IGNORED_TEXT_ELEMENTS:
                 return
 
-            # picture/SVG 视为一个插画容器，不进入子树重复标记。
+            # picture/SVG 视为一个插画容器，不进入子树重复计算。
             if name in ILLUSTRATION_ELEMENTS:
-                if seen_rendered_content:
-                    changed |= self._append_css_class(
-                        element,
-                        ILLUSTRATION_PAGE_CLASS,
-                    )
-                    has_page_break = True
-                seen_rendered_content = True
+                events.append(("illustration", element))
                 return
 
             if self._has_meaningful_layout_text(element.text):
-                seen_rendered_content = True
+                events.append(("text", None))
 
             for child in element:
                 if isinstance(child.tag, str):
-                    visit(child)
+                    collect_events(child)
                 elif isinstance(child, etree._Entity):
                     if not self._is_ignorable_layout_entity(child):
-                        seen_rendered_content = True
+                        events.append(("text", None))
                 if self._has_meaningful_layout_text(child.tail):
-                    seen_rendered_content = True
+                    events.append(("text", None))
 
-        visit(body)
-        return changed, has_page_break
+        collect_events(body)
+        changed = False
+        has_illustration = False
+        for index, (kind, element) in enumerate(events):
+            if kind != "illustration" or element is None:
+                continue
+
+            has_illustration = True
+            changed |= self._append_css_class(
+                element,
+                ILLUSTRATION_PAGE_CLASS,
+            )
+
+            previous_kind = events[index - 1][0] if index else None
+            if previous_kind == "text":
+                changed |= self._append_css_class(
+                    element,
+                    ILLUSTRATION_START_CLASS,
+                )
+
+            # 后续只要还有正文或下一张插画，都要由当前插画强制
+            # 分页。对连续插画仅使用前一张的 after break，避免双重分页。
+            if index + 1 < len(events):
+                changed |= self._append_css_class(
+                    element,
+                    ILLUSTRATION_END_CLASS,
+                )
+
+        return changed, has_illustration
 
     def _is_image_only_document(self, root: etree._Element) -> bool:
         """判断 body 是否只由一张或多张图片及无文本包装元素组成。"""

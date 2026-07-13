@@ -9,9 +9,11 @@ import pytest
 from lxml import etree
 
 from epub_tw_converter.documents import (
+    ILLUSTRATION_END_CLASS,
     ILLUSTRATION_PAGE_CLASS,
     ILLUSTRATION_PAGE_CSS,
     ILLUSTRATION_PAGE_STYLE_ID,
+    ILLUSTRATION_START_CLASS,
     VERTICAL_STYLE_ID,
     DocumentTransformer,
 )
@@ -269,16 +271,14 @@ def test_image_only_xhtml_keeps_original_image_composition(
         f'//*[local-name()="head"]//*['
         f'local-name()="style" and @id="{ILLUSTRATION_PAGE_STYLE_ID}"]'
     )
-    if image_count == 1:
-        assert page_styles == []
-        assert images[0].get("class") is None
-    else:
-        assert len(page_styles) == 1
-        assert page_styles[0].text == ILLUSTRATION_PAGE_CSS
-        assert [image.get("class") for image in images] == [
-            None,
-            *[ILLUSTRATION_PAGE_CLASS] * (image_count - 1),
-        ]
+    assert len(page_styles) == 1
+    assert page_styles[0].text == ILLUSTRATION_PAGE_CSS
+    expected_classes = [
+        " ".join((ILLUSTRATION_PAGE_CLASS, ILLUSTRATION_END_CLASS))
+        for _ in range(image_count - 1)
+    ]
+    expected_classes.append(ILLUSTRATION_PAGE_CLASS)
+    assert [image.get("class") for image in images] == expected_classes
 
 
 def test_illustration_after_prose_starts_on_a_new_page(
@@ -288,7 +288,7 @@ def test_illustration_after_prose_starts_on_a_new_page(
 
     source = """<html xmlns="http://www.w3.org/1999/xhtml">
 <head><title>章节</title></head>
-<body><p>程序网络</p><img src="../Images/c1.jpg" alt="插画" /></body>
+<body><p>程序网络</p><img src="../Images/c1.jpg" alt="插画" /><p>后续正文</p></body>
 </html>""".encode()
 
     result = transformer.transform(
@@ -299,7 +299,13 @@ def test_illustration_after_prose_starts_on_a_new_page(
 
     root = etree.fromstring(result.data)
     image = root.xpath('//*[local-name()="img"]')[0]
-    assert image.get("class") == ILLUSTRATION_PAGE_CLASS
+    assert image.get("class") == " ".join(
+        (
+            ILLUSTRATION_PAGE_CLASS,
+            ILLUSTRATION_START_CLASS,
+            ILLUSTRATION_END_CLASS,
+        )
+    )
     page_style = root.xpath(
         f'//*[local-name()="head"]//*['
         f'local-name()="style" and @id="{ILLUSTRATION_PAGE_STYLE_ID}"]'
